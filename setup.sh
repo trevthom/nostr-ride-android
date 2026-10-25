@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build the NostrRide Android APK. Needs JDK 17, the Android SDK 34 and Node 22.23.4+.
-#   ./setup.sh                 # main branch of trevthom/nostr-ride
-#   NR_REF=v1.2.3 ./setup.sh   # a tag or commit
-#   NR_REPO=<url> ./setup.sh   # a fork
+#   bash setup.sh                 # main branch of trevthom/nostr-ride
+#   NR_REF=v1.2.3 bash setup.sh   # a tag or commit
+#   NR_REPO=<url> bash setup.sh   # a fork
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -35,7 +35,9 @@ echo "==> Installing the Android shell"
 mkdir -p "$APP/native"
 cp -R "$HERE/native/." "$APP/native/"
 
-( cd "$APP/native" && npm install && npx cap copy android )
+# sync, not copy: the update step regenerates the plugin files (and
+# capacitor-cordova-android-plugins/cordova.variables.gradle) a fresh clone does not have.
+( cd "$APP/native" && npm install && npx cap sync android )
 
 AND="$APP/native/android"
 [ -f "$AND/local.properties" ] || echo "sdk.dir=$ANDROID_HOME" > "$AND/local.properties"

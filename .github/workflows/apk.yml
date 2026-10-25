@@ -3,6 +3,9 @@ name: APK
 # Builds the debug APK on GitHub's runner and attaches it to the release, so the
 # binary never has to pass through anyone's laptop (or a chat sandbox) to reach
 # a phone. Push a v* tag to cut a release, or run this from the Actions tab.
+#
+# The release notes are generated from .github/release-notes.md plus the real size
+# and checksum of the file that was just attached.
 
 on:
   workflow_dispatch:
@@ -49,8 +52,21 @@ jobs:
           TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'v1.0.0-debug' }}
         run: |
           set -euo pipefail
-          ls -l nostr-ride-android-debug.apk
-          gh release upload "$TAG" nostr-ride-android-debug.apk --clobber
+          APK=nostr-ride-android-debug.apk
+          ls -l "$APK"
+          gh release upload "$TAG" "$APK" --clobber
+
+          # The notes describe the asset that is actually attached, not the one a
+          # developer built on their own machine.
+          SIZE=$(numfmt --to=iec --suffix=B --format=%.1f "$(stat -c%s "$APK")")
+          SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+          {
+            cat .github/release-notes.md
+            echo "**Attached asset**: \`$APK\` - $SIZE, \`sha256 $SHA\`"
+            echo
+            echo "Built from commit \`$GITHUB_SHA\` by [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+          } > /tmp/notes.md
+          gh release edit "$TAG" --notes-file /tmp/notes.md
 
       - name: Keep a copy on the run
         uses: actions/upload-artifact@v4

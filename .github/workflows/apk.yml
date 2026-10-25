@@ -1,0 +1,60 @@
+name: APK
+
+# Builds the debug APK on GitHub's runner and attaches it to the release, so the
+# binary never has to pass through anyone's laptop (or a chat sandbox) to reach
+# a phone. Push a v* tag to cut a release, or run this from the Actions tab.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # The Gradle project targets SDK 34 with build-tools 34. The runner image
+      # usually has a newer platform; make sure the one it needs is there.
+      - name: Android SDK 34
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK/platforms/android-34" ] || [ ! -d "$SDK/build-tools/34.0.0" ]; then
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" \
+              "platforms;android-34" "build-tools;34.0.0" >/dev/null || true
+          fi
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+
+      - name: Build the APK
+        run: bash setup.sh
+
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'v1.0.0-debug' }}
+        run: |
+          set -euo pipefail
+          ls -l nostr-ride-android-debug.apk
+          gh release upload "$TAG" nostr-ride-android-debug.apk --clobber
+
+      - name: Keep a copy on the run
+        uses: actions/upload-artifact@v4
+        with:
+          name: nostr-ride-android-debug
+          path: nostr-ride-android-debug.apk
+          if-no-files-found: error

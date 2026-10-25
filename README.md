@@ -30,8 +30,10 @@ Nothing committed here is a copy of it.
 ## Build it
 
 ```bash
-./setup.sh
+bash setup.sh
 ```
+
+(Or `chmod +x setup.sh` once and run `./setup.sh`.)
 
 That clones `trevthom/nostr-ride` into `app/` (reusing it if it is already there),
 runs `npm ci && npm run build`, copies this repo's shell settings in, installs
@@ -39,8 +41,8 @@ Capacitor, copies the build into the Gradle project, and runs
 `./gradlew assembleDebug`. The APK is copied here as
 `nostr-ride-android-debug.apk`.
 
-Pin a different commit with `NR_REF=<tag> ./setup.sh`; use a fork with
-`NR_REPO=<git url> ./setup.sh`.
+Pin a different commit with `NR_REF=<tag> bash setup.sh`; use a fork with
+`NR_REPO=<git url> bash setup.sh`.
 
 After changing the web app: `cd app && npm run build && cd native && npx cap copy android`,
 then `cd android && ./gradlew assembleDebug`. The shell **embeds** the build — it

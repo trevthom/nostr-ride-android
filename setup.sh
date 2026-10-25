@@ -28,6 +28,13 @@ else
   echo "==> Reusing $APP"
 fi
 
+# App fixes this build carries that $APP_REF does not have yet. Delete the patch (and this block) once
+# they land upstream; the patch is the whole diff, so it applies to a fresh clone.
+if [ -f "$HERE/nostr-ride-login-fix.patch" ]; then
+  echo "==> Applying nostr-ride-login-fix.patch"
+  git -C "$APP" apply "$HERE/nostr-ride-login-fix.patch"
+fi
+
 echo "==> Building the web app"
 ( cd "$APP" && npm ci && npm run build )
 

@@ -1,0 +1,828 @@
+diff --git a/apps/nostrride/main.jsx b/apps/nostrride/main.jsx
+index 44249b9..315f32f 100644
+--- a/apps/nostrride/main.jsx
++++ b/apps/nostrride/main.jsx
+@@ -18,6 +18,35 @@ if (window.top !== window.self) {
+   document.documentElement.innerHTML = '<body style="font-family:system-ui,sans-serif;padding:2rem">Open NostrRide in its own tab.</body>';
+   throw new Error("NostrRide: refusing to run inside a frame");
+ }
++// Last-resort surface. The app's own nets (ui/ErrorBoundary.jsx: one per screen and one for the whole
++// app) catch what breaks inside React. This covers the rest — a module that fails while the page loads,
++// or a React tree torn down by an error no boundary saw — which a phone otherwise shows as a blank white
++// page, with no console to say why. It writes the reason on the page and offers a reload.
++// It never touches a page that is drawing: the root has no child only when nothing is mounted.
++function showFatal(reason) {
++  const root = document.getElementById("root");
++  if (!root || root.childElementCount) return;
++  const text = String(reason && (reason.message || reason) || "Unknown error").slice(0, 300);
++  const wrap = document.createElement("div");
++  wrap.setAttribute("role", "alert");
++  wrap.style.cssText = "display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;height:100%;padding:24px;box-sizing:border-box;text-align:center;font-family:system-ui,-apple-system,sans-serif;background:#fff;color:#000";
++  const title = document.createElement("p");
++  title.textContent = "NostrRide stopped";
++  title.style.cssText = "margin:0;font-size:18px;font-weight:700";
++  const message = document.createElement("p");
++  message.textContent = text;
++  message.style.cssText = "margin:0;max-width:20rem;font-size:14px;color:#525252;overflow-wrap:anywhere";
++  const button = document.createElement("button");
++  button.type = "button";
++  button.textContent = "Reload";
++  button.style.cssText = "padding:10px 20px;border:0;border-radius:999px;background:#000;color:#fff;font-size:14px;font-weight:600";
++  button.addEventListener("click", () => window.location.reload());
++  wrap.append(title, message, button);
++  root.replaceChildren(wrap);
++}
++window.addEventListener("error", (e) => showFatal(e.error || e.message));
++window.addEventListener("unhandledrejection", (e) => showFatal(e.reason));
++
+ registerServiceWorker();
+ applyAppearance(); // light or dark, as saved on this device
+ ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+diff --git a/package-lock.json b/package-lock.json
+index 4e6f2d8..9af68c7 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -8,6 +8,7 @@
+       "name": "nostr-ride",
+       "version": "0.1.0",
+       "dependencies": {
++        "@capacitor/core": "^6.2.2",
+         "@cashu/cashu-ts": "4.12.0",
+         "@noble/hashes": "^2.4.0",
+         "@scure/base": "^2.4.0",
+@@ -325,6 +326,15 @@
+         "node": ">=6.9.0"
+       }
+     },
++    "node_modules/@capacitor/core": {
++      "version": "6.2.2",
++      "resolved": "https://registry.npmjs.org/@capacitor/core/-/core-6.2.2.tgz",
++      "integrity": "sha512-qEI3DcwJEPzhW+hVGKH8m4jbujtkdUiGkpMLHmpR8epACU7wEsV6NF8pCHzpsMYjc80oK7Cmpcw+MIienv/YRw==",
++      "license": "MIT",
++      "dependencies": {
++        "tslib": "^2.1.0"
++      }
++    },
+     "node_modules/@cashu/cashu-ts": {
+       "version": "4.12.0",
+       "resolved": "https://registry.npmjs.org/@cashu/cashu-ts/-/cashu-ts-4.12.0.tgz",
+@@ -2818,6 +2828,12 @@
+       "dev": true,
+       "license": "Apache-2.0"
+     },
++    "node_modules/tslib": {
++      "version": "2.8.1",
++      "resolved": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
++      "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
++      "license": "0BSD"
++    },
+     "node_modules/update-browserslist-db": {
+       "version": "1.3.4",
+       "resolved": "https://registry.npmjs.org/update-browserslist-db/-/update-browserslist-db-1.3.4.tgz",
+diff --git a/package.json b/package.json
+index 0ba2afe..232d4c1 100644
+--- a/package.json
++++ b/package.json
+@@ -10,6 +10,7 @@
+     "test": "node --test \"test/*.test.mjs\""
+   },
+   "dependencies": {
++    "@capacitor/core": "^6.2.2",
+     "@cashu/cashu-ts": "4.12.0",
+     "@noble/hashes": "^2.4.0",
+     "@scure/base": "^2.4.0",
+diff --git a/src/app/App.jsx b/src/app/App.jsx
+index 0d39075..5b43639 100644
+--- a/src/app/App.jsx
++++ b/src/app/App.jsx
+@@ -19,7 +19,7 @@ import { RiderProvider, useRider } from "../rider/state/RiderContext.jsx";
+ import { DriverProvider, useDriver } from "../driver/state/DriverContext.jsx";
+ import { AppFrame, TabBar } from "../ui/Layout.jsx";
+ import { ModeProvider } from "../ui/ModeSwitch.jsx";
+-import ErrorBoundary from "../ui/ErrorBoundary.jsx";
++import ErrorBoundary, { RootBoundary } from "../ui/ErrorBoundary.jsx";
+ import UserModal from "../ui/UserModal.jsx";
+ import NoticeBanner from "../ui/NoticeBanner.jsx";
+ import ConnectionBanner from "../ui/ConnectionBanner.jsx";
+@@ -117,9 +117,13 @@ function Gate() {
+ }
+ 
+ export default function NostrRideApp() {
++  // The RootBoundary is OUTSIDE the provider: a provider or the shell itself breaking is exactly the
++  // case that used to unmount everything and leave a blank page (see ui/ErrorBoundary.jsx).
+   return (
+-    <AppProvider initialView="home">
+-      <Gate />
+-    </AppProvider>
++    <RootBoundary>
++      <AppProvider initialView="home">
++        <Gate />
++      </AppProvider>
++    </RootBoundary>
+   );
+ }
+diff --git a/src/features/auth/AuthScreen.jsx b/src/features/auth/AuthScreen.jsx
+index 1d6b073..b48a986 100644
+--- a/src/features/auth/AuthScreen.jsx
++++ b/src/features/auth/AuthScreen.jsx
+@@ -17,6 +17,7 @@ import { relay } from "../../nostr/relay.js";
+ import { EVENT_KINDS } from "../../nostr/eventKinds.js";
+ import { getMetadata, getProfile } from "../../nostr/profiles.js";
+ import { getSavedKey, saveKey, unlockKey, MIN_PASSWORD } from "../../nostr/keystore.js";
++import { useApp } from "../../state/AppContext.jsx";
+ import { myVehicle } from "../../lib/privacy.js";
+ import { useRelays, setRelays } from "../../config/relays.js";
+ import { APP_NAME } from "../../config/app.js";
+@@ -31,10 +32,15 @@ import { UnlockView, BackupStep } from "./AuthSteps.jsx";
+ const DEFAULT_NAME = "Anonymous";
+ const COPY = { tagline: "Ride or drive. No middleman.", sub: "Rides arranged peer to peer on Nostr, paid in ecash." };
+ 
++// How long the login may wait for the key's profile before going ahead without it. It only adds a name
++// and a photo; the app fetches it again once logged in (state/AppContext.jsx).
++const PROFILE_WAIT_MS = 2500;
++
+ // Let React paint a "busy" label before slow, blocking work (scrypt).
+ const nextFrame = () => new Promise((r) => setTimeout(r, 30));
+ 
+ export default function AuthScreen({ onLogin }) {
++  const { pushNotice } = useApp() || {};
+   const [saved] = useState(getSavedKey);
+   const [stage, setStage] = useState(saved ? "unlock" : "form"); // "unlock" | "form" | "backup"
+   const [mode, setMode] = useState("new"); // "new" | "import"
+@@ -50,10 +56,20 @@ export default function AuthScreen({ onLogin }) {
+ 
+   // Enter the app; save the key (encrypted) first if asked to.
+   const enter = async (u, { save = remember } = {}) => {
++    // Let go of the field first. On Android the keyboard is still open when this screen goes away, and
++    // a WebView can be left with a blank, keyboard-sized view behind the screen that replaces it.
++    try { document.activeElement?.blur?.(); } catch { /* ignore */ }
+     if (save) {
+       setBusy(true);
+       await nextFrame();
+-      saveKey(u.sk, password, { name: u.name });
++      try {
++        saveKey(u.sk, password, { name: u.name });
++      } catch (e) {
++        // "Remember me" is a convenience; the key itself was shown on the backup screen. A device that
++        // cannot encrypt or store it must still be able to sign in, with a word of warning.
++        console.warn("Could not save the key on this device:", e);
++        pushNotice?.("Your key could not be saved on this device. Keep the one you wrote down; you will have to paste it next time.");
++      }
+       setBusy(false);
+     }
+     onLogin(u);
+@@ -74,7 +90,12 @@ export default function AuthScreen({ onLogin }) {
+   // typed a new name (merged into the old profile).
+   const enterExisting = async (keys, { save } = {}) => {
+     setBusy(true);
+-    await relay.fetchProfile(keys.publicKey);
++    // Never let a relay hold the login: a phone on a weak signal used to sit on "Unlocking…" forever
++    // when the profile query did not answer. Whatever arrives late is still taken in by the relay cache.
++    await Promise.race([
++      relay.fetchProfile(keys.publicKey).catch(() => {}),
++      new Promise((resolve) => setTimeout(resolve, PROFILE_WAIT_MS)),
++    ]);
+     setBusy(false);
+     const existing = getMetadata(keys.publicKey);
+     const typed = name.trim();
+@@ -118,7 +139,10 @@ export default function AuthScreen({ onLogin }) {
+       setError(e.message || "Invalid nsec key.");
+       return;
+     }
+-    enterExisting(keys);
++    enterExisting(keys).catch((e) => {
++      setBusy(false);
++      setError(e?.message || "Could not open your account. Try again.");
++    });
+   };
+ 
+   const handleUnlock = async (pw) => {
+@@ -133,7 +157,12 @@ export default function AuthScreen({ onLogin }) {
+       setError(e.message);
+       return;
+     }
+-    enterExisting(keys, { save: false }); // already saved
++    try {
++      await enterExisting(keys, { save: false }); // already saved
++    } catch (e) {
++      setBusy(false);
++      setError(e?.message || "Could not open your account. Try again.");
++    }
+   };
+ 
+   // Pressing Enter in a field triggers the screen's primary action.
+diff --git a/src/lib/heartbeat.js b/src/lib/heartbeat.js
+index eb45b1b..05387b3 100644
+--- a/src/lib/heartbeat.js
++++ b/src/lib/heartbeat.js
+@@ -12,11 +12,18 @@
+ //  and lets the payment pass pay what fell due. It is only a clock — no key, no coin, no
+ //  wallet code and no signing move into native code; the page still pays the ride.
+ //
+-//  Looked up at RUN time (window.Capacitor), like nativeGeo.js, so the web build has no
+-//  dependency on it. In a browser startHeartbeat() does nothing and returns a no-op stop.
++//  Reached through @capacitor/core, like nativeGeo.js: core is what gives the shell's injected bridge
++//  (window.Capacitor + PluginHeaders) callable plugins. In a browser startHeartbeat() does nothing
++//  and returns a no-op stop.
+ // ════════════════════════════════════════════════════════════
+ 
+-const cap = () => (typeof window !== "undefined" ? window.Capacitor : undefined);
++import { Capacitor, registerPlugin } from "@capacitor/core";
++
++const PLUGIN = "NostrRideHeartbeat";
++const nativePlugin = registerPlugin(PLUGIN);
++
++// In a shell, and only when that shell was built with the plugin (an older APK is not).
++const available = () => Capacitor.isNativePlatform() && Capacitor.isPluginAvailable(PLUGIN);
+ 
+ // The name the Swift and Kotlin plugins call. Change it in all three places, or not at all.
+ export const BEAT_GLOBAL = "__nostrRideBeat";
+@@ -29,11 +36,6 @@ export const BEAT_INTERVAL_MS = 15000;
+ const MIN_INTERVAL_MS = 2000;
+ const MAX_INTERVAL_MS = 60000;
+ 
+-function plugin() {
+-  const c = cap();
+-  return c?.registerPlugin ? c.registerPlugin("NostrRideHeartbeat") : c?.Plugins?.NostrRideHeartbeat;
+-}
+-
+ // Who to tell when native says "now". A Set, so two screens asking for the same beat share
+ // one native timer instead of starting two.
+ const listeners = new Set();
+@@ -60,8 +62,7 @@ function uninstall() {
+ // timer is stopped when the LAST listener goes. Outside the native shell this does nothing:
+ // resolve to a no-op stop, never an error, so a browser and an older shell both keep working.
+ export function startHeartbeat(onBeat, { intervalMs = BEAT_INTERVAL_MS } = {}) {
+-  const c = cap();
+-  const native = c?.isNativePlatform?.() ? plugin() : null;
++  const native = available() ? nativePlugin : null;
+   if (typeof onBeat !== "function" || !native) return noop;
+ 
+   listeners.add(onBeat);
+diff --git a/src/lib/nativeGeo.js b/src/lib/nativeGeo.js
+index 8e3dcef..65f8f9c 100644
+--- a/src/lib/nativeGeo.js
++++ b/src/lib/nativeGeo.js
+@@ -4,9 +4,11 @@
+ //  or the app is in the background; a native shell can, through a foreground
+ //  service (Android) or a background mode (iOS).
+ //
+-//  The plugin is looked up at RUN time (window.Capacitor), so the web build
+-//  has no dependency on it. In a plain browser isNative() is false and the
+-//  app uses the normal geolocation API (lib/useGeolocation.js).
++//  The plugin comes from @capacitor/core. That package is what turns the bridge the shell injects
++//  into the page (window.Capacitor plus its PluginHeaders) into a callable plugin; looking for
++//  window.Capacitor.registerPlugin by hand never found anything there, so the shell used to receive
++//  no location call at all. In a plain browser isNative() is false and the app uses the normal
++//  geolocation API (lib/useGeolocation.js); core itself is inert there.
+ //
+ //  Plugin: @capacitor-community/background-geolocation (addWatcher / removeWatcher).
+ //
+@@ -19,16 +21,17 @@
+ //  keeps running. So a watcher is started in the background only when it is wanted.
+ // ════════════════════════════════════════════════════════════
+ 
+-const cap = () => (typeof window !== "undefined" ? window.Capacitor : undefined);
++import { Capacitor, registerPlugin } from "@capacitor/core";
+ 
+-export const isNative = () => !!cap()?.isNativePlatform?.();
++const PLUGIN = "BackgroundGeolocation";
++const bg = registerPlugin(PLUGIN);
+ 
+-export const isIos = () => cap()?.getPlatform?.() === "ios";
++// In a shell, and only when that shell was built with the plugin (an older APK is not).
++const available = () => Capacitor.isNativePlatform() && Capacitor.isPluginAvailable(PLUGIN);
+ 
+-function plugin() {
+-  const c = cap();
+-  return c?.registerPlugin ? c.registerPlugin("BackgroundGeolocation") : c?.Plugins?.BackgroundGeolocation;
+-}
++export const isNative = () => Capacitor.isNativePlatform();
++
++export const isIos = () => Capacitor.getPlatform() === "ios";
+ 
+ // ── Every fix, for whoever needs a heartbeat ──
+ // The location callbacks are the one thing the native side delivers even while the page is
+@@ -51,8 +54,7 @@ const announce = (fix) => { for (const fn of fixListeners) { try { fn(fix); } ca
+ //   distanceFilter   metres between fixes (0 = every fix, ~1/s, which is a heartbeat)
+ // Returns a function that stops the watcher.
+ export function startNativeWatch(onFix, onError, { title = "Driving with NostrRide", message = "Sharing your location with your rider.", background = true, distanceFilter = 10 } = {}) {
+-  const bg = plugin();
+-  if (!bg) { onError({ code: 2, message: "Background location is not available in this app." }); return () => {}; }
++  if (!available()) { onError({ code: 2, message: "Background location is not available in this app." }); return () => {}; }
+   let id = null;
+   let stopped = false;
+   bg.addWatcher(
+diff --git a/src/nostr/keystore.js b/src/nostr/keystore.js
+index 6724736..64736ef 100644
+--- a/src/nostr/keystore.js
++++ b/src/nostr/keystore.js
+@@ -12,10 +12,14 @@ const KEY = "nostrride_key";
+ export const MIN_PASSWORD = 8;
+ 
+ // { ncryptsec, pubkey, name } or null.
++// A record written by an older app (or half written) must never put the app on a blank page: the unlock
++// screen draws the account from `pubkey`, so a record without a usable one is ignored and the sign-in form
++// is shown instead. `name` is optional and only ever text.
+ export function getSavedKey() {
+   try {
+     const v = JSON.parse(localStorage.getItem(KEY));
+-    return v && typeof v.ncryptsec === "string" ? v : null;
++    if (!v || typeof v.ncryptsec !== "string" || !/^[0-9a-f]{64}$/i.test(v.pubkey || "")) return null;
++    return { ncryptsec: v.ncryptsec, pubkey: v.pubkey.toLowerCase(), name: typeof v.name === "string" ? v.name : "" };
+   } catch {
+     return null;
+   }
+diff --git a/src/ui/ErrorBoundary.jsx b/src/ui/ErrorBoundary.jsx
+index dc0775e..f0911bb 100644
+--- a/src/ui/ErrorBoundary.jsx
++++ b/src/ui/ErrorBoundary.jsx
+@@ -3,6 +3,12 @@
+ //  show a small recoverable message instead of a blank screen, and
+ //  the rest of the app (like the tab bar) keeps working.
+ //
++//  ErrorBoundary   wraps ONE screen (the tab bar stays usable).
++//  RootBoundary    wraps the WHOLE app. Without it, anything thrown above the
++//                  screen (the app shell, a provider) would leave the person on a
++//                  blank white page with no way back — which is what a phone shows
++//                  when a React tree is torn down. It renders FatalScreen instead.
++//
+ //  (Error boundaries must be class components — this is the one
+ //  place in the app that uses a class.)
+ // ════════════════════════════════════════════════════════════
+@@ -52,3 +58,45 @@ export default class ErrorBoundary extends Component {
+     return this.props.children;
+   }
+ }
++
++// The page shown when the shell itself broke. Plain and self-contained on purpose: it must work when
++// the screens' own styling or the map did not, and it always offers a reload (the app holds no data
++// that a reload loses: keys and coins are saved on the device as they change).
++export function FatalScreen({ error }) {
++  const message = String(error?.message || error || "Unknown error");
++  return (
++    <div className="nr-frame flex flex-col items-center justify-center gap-3 p-6 bg-white text-center">
++      <p className="font-bold text-lg">NostrRide stopped</p>
++      <p className="text-neutral-600 text-sm break-words max-w-xs">{message}</p>
++      <p className="text-neutral-500 text-xs max-w-xs">Your ecash, and your key if you saved it here, stay on this device.</p>
++      <button
++        type="button"
++        onClick={() => window.location.reload()}
++        className="px-5 py-2.5 rounded-full text-sm font-semibold bg-black text-white"
++      >
++        Reload
++      </button>
++    </div>
++  );
++}
++
++// The whole app, not just one screen (see the note at the top of this file).
++export class RootBoundary extends Component {
++  constructor(props) {
++    super(props);
++    this.state = { error: null };
++  }
++
++  static getDerivedStateFromError(error) {
++    return { error };
++  }
++
++  componentDidCatch(error, info) {
++    console.error("App error:", error, info);
++  }
++
++  render() {
++    if (this.state.error) return <FatalScreen error={this.state.error} />;
++    return this.props.children;
++  }
++}
+diff --git a/test/heartbeat-web.test.mjs b/test/heartbeat-web.test.mjs
+new file mode 100644
+index 0000000..51ca297
+--- /dev/null
++++ b/test/heartbeat-web.test.mjs
+@@ -0,0 +1,29 @@
++// The heartbeat in a plain browser, and in a shell built before the plugin existed: nothing to start,
++// no hook installed, and no call to the native side.
++import assert from "node:assert/strict";
++
++const calls = [];
++globalThis.window = globalThis;
++// No bridge at import time: this is a browser. @capacitor/core records the platform as "web".
++globalThis.Capacitor = { nativePromise: (...args) => { calls.push(args); return Promise.resolve(); } };
++
++const H = await import("../src/lib/heartbeat.js");
++
++assert.equal(globalThis.__nostrRideBeat, undefined, "nothing installed yet");
++const stop = H.startHeartbeat(() => { throw new Error("must never be called"); });
++assert.equal(typeof stop, "function");
++stop();
++stop(); // idempotent
++assert.equal(globalThis.__nostrRideBeat, undefined, "no hook in a browser");
++
++// Now an Android bridge appears, but this page never registered the heartbeat plugin (an older APK):
++// still nothing to start, and still no hook.
++globalThis.androidBridge = {};
++const stopOld = H.startHeartbeat(() => { throw new Error("must never be called"); });
++stopOld();
++assert.equal(globalThis.__nostrRideBeat, undefined, "an older shell has no timer to give");
++await new Promise((r) => setTimeout(r, 5));
++assert.equal(calls.length, 0, "the native side is never called");
++
++console.log("heartbeat web checks passed");
++process.exit(0);
+diff --git a/test/heartbeat.test.mjs b/test/heartbeat.test.mjs
+index 973f00d..ebb6c83 100644
+--- a/test/heartbeat.test.mjs
++++ b/test/heartbeat.test.mjs
+@@ -1,38 +1,43 @@
+-// The native heartbeat (lib/heartbeat.js) with a fake Capacitor shell.
+-// Run with: npm test
++// The native heartbeat (lib/heartbeat.js), driven through Capacitor's own plugin proxy
++// (@capacitor/core) against the bridge the Android shell injects. The platform is read when core is
++// imported, so the fake bridge is installed first.
+ import assert from "node:assert/strict";
+-const H = await import("../src/lib/heartbeat.js");
+-
+-// ── A plain browser, and Node: no shell, so nothing to start ──
+-assert.equal(typeof H.BEAT_GLOBAL, "string");
+-const noShell = H.startHeartbeat(() => { throw new Error("must never be called"); });
+-assert.equal(typeof noShell, "function");
+-noShell(); noShell(); // idempotent
+-globalThis.window = {}; // a page without Capacitor
+-const stopNoCap = H.startHeartbeat(() => {});
+-stopNoCap();
+ 
+-// ── A shell ──
+-let startArgs, stops = 0, starts = 0;
+-const makeShell = () => {
+-  globalThis.window = {
+-    Capacitor: {
+-      isNativePlatform: () => true,
+-      registerPlugin: () => ({
+-        start: async (opts) => { starts += 1; startArgs = opts; return { intervalMs: opts.intervalMs }; },
+-        stop: async () => { stops += 1; },
+-      }),
++const calls = [];
++globalThis.window = globalThis; // the page and the global object are the same in a browser
++globalThis.androidBridge = {};
++globalThis.Capacitor = {
++  PluginHeaders: [
++    {
++      name: "NostrRideHeartbeat",
++      methods: [
++        { name: "start", rtype: "promise" },
++        { name: "stop", rtype: "promise" },
++      ],
+     },
+-  };
++  ],
++  nativeCallback: () => "cb",
++  nativePromise: (pluginName, methodName, options) => {
++    calls.push({ pluginName, methodName, options });
++    return Promise.resolve(methodName === "start" ? { intervalMs: options?.intervalMs } : undefined);
++  },
+ };
+-const beat = () => globalThis.window.__nostrRideBeat;
+ 
+-makeShell();
++const H = await import("../src/lib/heartbeat.js");
++const beat = () => globalThis.__nostrRideBeat;
++const starts = () => calls.filter((c) => c.methodName === "start");
++const stops = () => calls.filter((c) => c.methodName === "stop");
++const tick = () => new Promise((r) => setTimeout(r, 5));
++
++assert.equal(typeof H.BEAT_GLOBAL, "string");
++
++// ── Starting: one native timer, and the hook the shell evaluates ──
+ const beats = [];
+ const stop = H.startHeartbeat(() => beats.push(1));
+-await new Promise((r) => setTimeout(r, 5));
+-assert.equal(starts, 1, "the native timer is started once");
+-assert.deepEqual(startArgs, { intervalMs: H.BEAT_INTERVAL_MS });
++await tick();
++assert.equal(starts().length, 1, "the native timer is started once");
++assert.equal(starts()[0].pluginName, "NostrRideHeartbeat");
++assert.deepEqual(starts()[0].options, { intervalMs: H.BEAT_INTERVAL_MS });
+ assert.equal(typeof beat(), "function", "the page installs the function the shell calls");
+ assert.equal(beats.length, 0, "nothing beats until the shell says so");
+ beat()();
+@@ -41,62 +46,45 @@ assert.equal(beats.length, 1);
+ // ── Two screens, one native timer ──
+ const more = [];
+ const stop2 = H.startHeartbeat(() => more.push(1));
+-assert.equal(starts, 1, "a second listener reuses the running timer");
++await tick();
++assert.equal(starts().length, 1, "a second listener reuses the running timer");
+ beat()();
+-assert.equal(beats.length, 2); assert.equal(more.length, 1);
++assert.equal(beats.length, 2);
++assert.equal(more.length, 1);
+ // One listener that throws must not stop the other: two rides' worth of money must keep being paid.
+ const stopBad = H.startHeartbeat(() => { throw new Error("boom"); });
+ beat()();
+-assert.equal(beats.length, 3); assert.equal(more.length, 2);
++assert.equal(beats.length, 3);
++assert.equal(more.length, 2);
+ stopBad();
+ 
+ // ── The last one out stops the native timer and takes the hook away ──
+ stop2();
+-assert.equal(stops, 0, "still one listener: keep beating");
++await tick();
++assert.equal(stops().length, 0, "still one listener: keep beating");
+ assert.equal(typeof beat(), "function");
+ stop();
+-assert.equal(stops, 1, "the native timer is stopped");
++await tick();
++assert.equal(stops().length, 1, "the native timer is stopped");
+ assert.equal(beat(), undefined, "and the shell has nothing left to call");
+ 
+ // ── The interval is clamped the same way as native, so the two cannot disagree ──
+-makeShell();
+-const stopsBefore = stops;
+ const fast = H.startHeartbeat(() => {}, { intervalMs: 10 });
+-await new Promise((r) => setTimeout(r, 5));
+-assert.deepEqual(startArgs, { intervalMs: 2000 }, "never faster than 2 s");
++await tick();
++assert.deepEqual(starts().at(-1).options, { intervalMs: 2000 }, "never faster than 2 s");
+ fast();
++await tick();
+ const slow = H.startHeartbeat(() => {}, { intervalMs: 10 * 60 * 1000 });
+-await new Promise((r) => setTimeout(r, 5));
+-assert.deepEqual(startArgs, { intervalMs: 60000 }, "never slower than 60 s");
++await tick();
++assert.deepEqual(starts().at(-1).options, { intervalMs: 60000 }, "never slower than 60 s");
+ slow();
++await tick();
+ const junk = H.startHeartbeat(() => {}, { intervalMs: "soon" });
+-await new Promise((r) => setTimeout(r, 5));
+-assert.deepEqual(startArgs, { intervalMs: H.BEAT_INTERVAL_MS }, "junk falls back to the default");
++await tick();
++assert.deepEqual(starts().at(-1).options, { intervalMs: H.BEAT_INTERVAL_MS }, "junk falls back to the default");
+ junk();
+-assert.equal(stops, stopsBefore + 3);
+-
+-// ── An older shell: the plugin is not registered, so start() rejects. The page must not care. ──
+-globalThis.window = {
+-  Capacitor: {
+-    isNativePlatform: () => true,
+-    registerPlugin: () => ({ start: async () => { throw new Error("not implemented"); }, stop: async () => { throw new Error("not implemented"); } }),
+-  },
+-};
+-const old = H.startHeartbeat(() => {});
+-await new Promise((r) => setTimeout(r, 10));
+-assert.equal(typeof beat(), "function", "the page hook stays installed");
+-assert.equal(typeof old, "function");
+-old(); // and stopping it does not throw either
+-
+-// ── A plugin that throws synchronously (no bridge yet) is no worse ──
+-globalThis.window = {
+-  Capacitor: {
+-    isNativePlatform: () => true,
+-    registerPlugin: () => ({ start: () => { throw new Error("no bridge"); }, stop: () => { throw new Error("no bridge"); } }),
+-  },
+-};
+-const thrown = H.startHeartbeat(() => {});
+-thrown();
++await tick();
++assert.equal(stops().length, 4, "each last listener stopped the native timer");
+ 
+ console.log("heartbeat checks passed");
+ process.exit(0);
+diff --git a/test/keystore.test.mjs b/test/keystore.test.mjs
+new file mode 100644
+index 0000000..1e174c7
+--- /dev/null
++++ b/test/keystore.test.mjs
+@@ -0,0 +1,41 @@
++// "Remember me": the one key saved on this device (nostr/keystore.js). A saved record is read before the
++// first screen is drawn, so an incomplete one must be ignored, never handed to the unlock screen (which
++// needs the public key, and used to crash the whole app into a blank page without it).
++import assert from "node:assert/strict";
++
++const mem = new Map();
++globalThis.localStorage = {
++  getItem: (k) => (mem.has(k) ? mem.get(k) : null),
++  setItem: (k, v) => void mem.set(k, String(v)),
++  removeItem: (k) => void mem.delete(k),
++};
++const R = new URL("../src", import.meta.url).pathname;
++const K = await import(`${R}/nostr/keystore.js`);
++
++const KEY = "nostrride_key";
++const pk = "ab".repeat(32);
++
++// Nothing saved: the sign-in form is shown.
++assert.equal(K.getSavedKey(), null, "no record, nothing to unlock");
++
++// A complete record is what the unlock screen needs.
++mem.set(KEY, JSON.stringify({ ncryptsec: "ncryptsec1test", pubkey: pk, name: "Ana" }));
++assert.deepEqual(K.getSavedKey(), { ncryptsec: "ncryptsec1test", pubkey: pk, name: "Ana" });
++
++// A record without a public key (an older app's shape, or a half-written one) is ignored.
++mem.set(KEY, JSON.stringify({ ncryptsec: "ncryptsec1test" }));
++assert.equal(K.getSavedKey(), null, "no public key: nothing the unlock screen could draw");
++
++// Nor a malformed public key, nor a ciphertext that is not text.
++mem.set(KEY, JSON.stringify({ ncryptsec: "ncryptsec1test", pubkey: "nope" }));
++assert.equal(K.getSavedKey(), null);
++mem.set(KEY, JSON.stringify({ ncryptsec: 42, pubkey: pk }));
++assert.equal(K.getSavedKey(), null);
++
++// The public key is normalized; a name that is not text is dropped instead of reaching the screen.
++mem.set(KEY, JSON.stringify({ ncryptsec: "ncryptsec1test", pubkey: pk.toUpperCase(), name: { not: "text" } }));
++assert.deepEqual(K.getSavedKey(), { ncryptsec: "ncryptsec1test", pubkey: pk, name: "" });
++
++// Corrupt JSON is not fatal either.
++mem.set(KEY, "{not json");
++assert.equal(K.getSavedKey(), null);
+diff --git a/test/native-web.test.mjs b/test/native-web.test.mjs
+new file mode 100644
+index 0000000..129e953
+--- /dev/null
++++ b/test/native-web.test.mjs
+@@ -0,0 +1,23 @@
++// A plain browser must never call the native plugin, and a shell built without it (an older APK)
++// must say so instead of crashing. No bridge at import time = a browser; the plugin is not available
++// even once an Android bridge appears later, because this page never registered one.
++import assert from "node:assert/strict";
++
++const N = await import("../src/lib/nativeGeo.js");
++
++assert.equal(N.isNative(), false, "no shell: the app uses lib/useGeolocation.js");
++assert.equal(N.isIos(), false);
++const webErrors = [];
++N.startNativeWatch(() => {}, (e) => webErrors.push(e));
++assert.equal(webErrors[0].code, 2, "a clear error, not a crash");
++assert.equal(webErrors[0].message, "Background location is not available in this app.");
++
++// Now pretend to be an Android shell that was built WITHOUT @capacitor-community/background-geolocation:
++// the platform is Android, but this plugin has no header (no native methods) for it.
++globalThis.androidBridge = {};
++assert.equal(N.isNative(), true, "the platform is read live");
++const oldShellErrors = [];
++N.startNativeWatch(() => {}, (e) => oldShellErrors.push(e));
++assert.equal(oldShellErrors[0].code, 2, "an older APK says the location plugin is missing");
++console.log("native web checks passed");
++process.exit(0);
+diff --git a/test/native.test.mjs b/test/native.test.mjs
+index 8242faf..a7ea7be 100644
+--- a/test/native.test.mjs
++++ b/test/native.test.mjs
+@@ -1,66 +1,109 @@
+-// Native background-location adapter, tested with a fake Capacitor plugin.
+-// Run with: npm test
++// Native background-location adapter, driven through Capacitor's own plugin proxy (@capacitor/core)
++// against the bridge the Android shell injects. The platform is read when core is imported, so the
++// fake bridge is installed first.
++//
++// The plugin's addWatcher is a "callback" method: the shell keeps the callback id and calls the page
++// again for every fix. removeWatcher is a promise method. Both shapes are what the real APK sends.
+ import assert from "node:assert/strict";
++
++const calls = [];
++globalThis.androidBridge = {}; // the Android WebView adds this before any page script runs
++globalThis.Capacitor = {
++  PluginHeaders: [
++    {
++      name: "BackgroundGeolocation",
++      methods: [
++        { name: "addWatcher", rtype: "callback" },
++        { name: "removeWatcher", rtype: "promise" },
++        { name: "openSettings", rtype: "promise" },
++      ],
++    },
++  ],
++  nativeCallback: (pluginName, methodName, options, callback) => {
++    calls.push({ pluginName, methodName, options, callback, rtype: "callback" });
++    return "w1";
++  },
++  nativePromise: (pluginName, methodName, options) => {
++    calls.push({ pluginName, methodName, options, rtype: "promise" });
++    return Promise.resolve();
++  },
++};
++
+ const N = await import("../src/lib/nativeGeo.js");
++const adds = () => calls.filter((c) => c.methodName === "addWatcher");
++const removes = () => calls.filter((c) => c.methodName === "removeWatcher");
++
++assert.equal(N.isNative(), true, "the shell's bridge says Android");
++assert.equal(N.isIos(), false);
+ 
+-assert.equal(N.isNative(), false, "plain browser/Node: not native");
+-let added, removed = [], cb;
+-globalThis.window = { Capacitor: { isNativePlatform: () => true, registerPlugin: () => ({
+-  addWatcher: async (opts, fn) => { added = opts; cb = fn; return "w1"; },
+-  removeWatcher: async ({ id }) => { removed.push(id); },
+-}) } };
+-assert.equal(N.isNative(), true);
++// ── A background watcher: the notification the plugin needs, and every fix ──
+ const fixes = [], errors = [];
+ const stop = N.startNativeWatch((f) => fixes.push(f), (e) => errors.push(e));
+ await new Promise((r) => setTimeout(r, 5));
+-assert.equal(added.requestPermissions, true); assert.equal(added.stale, false); assert.ok(added.backgroundMessage && added.backgroundTitle, "needs a foreground notification");
+-cb({ latitude: 38.03, longitude: -84.5, accuracy: 12, time: 123 });
++assert.equal(adds().length, 1, "the shell is asked to watch");
++const add = adds()[0];
++assert.equal(add.pluginName, "BackgroundGeolocation");
++assert.equal(add.methodName, "addWatcher");
++assert.equal(add.options.requestPermissions, true);
++assert.equal(add.options.stale, false);
++assert.ok(add.options.backgroundMessage && add.options.backgroundTitle, "needs a foreground notification");
++assert.equal(add.options.distanceFilter, 10);
++add.callback({ latitude: 38.03, longitude: -84.5, accuracy: 12, time: 123 });
+ assert.deepEqual(fixes[0], { coords: { latitude: 38.03, longitude: -84.5, accuracy: 12 }, timestamp: 123 }, "same shape as the browser API");
+-cb(undefined, { code: "NOT_AUTHORIZED" }); assert.equal(errors[0].code, 1, "permission error maps to PositionError code 1");
+-stop(); await new Promise((r) => setTimeout(r, 5));
+-assert.deepEqual(removed, ["w1"], "stopping removes the watcher");
+-// Stopped before the watcher id came back: it is removed as soon as it arrives.
+-removed = [];
+-const stop2 = N.startNativeWatch(() => {}, () => {}); stop2(); await new Promise((r) => setTimeout(r, 5));
+-assert.deepEqual(removed, ["w1"]);
+-// A foreground watcher: no background message (the plugin reads its presence to decide whether
+-// the app may keep running in the background), and the distance filter is passed straight through.
+-// distanceFilter 0 is what a `heartbeat` watcher asks for: every fix, so a hidden page still runs.
+-added = undefined;
+-const stopFg = N.startNativeWatch(() => {}, () => {}, { background: false, distanceFilter: 0 });
+-stopFg();
++add.callback(undefined, { code: "NOT_AUTHORIZED" });
++assert.equal(errors[0].code, 1, "permission error maps to PositionError code 1");
++add.callback(undefined, { code: "SOMETHING_ELSE", message: "no gps" });
++assert.equal(errors[1].code, 2);
++assert.equal(errors[1].message, "no gps");
++// A callback with neither a fix nor an error is ignored.
++add.callback(undefined, undefined);
++assert.equal(fixes.length, 1);
++stop();
+ await new Promise((r) => setTimeout(r, 5));
+-assert.equal(added.backgroundMessage, undefined, "no message = no background mode");
+-assert.equal(added.backgroundTitle, undefined);
+-assert.equal(added.distanceFilter, 0, "0 = every fix");
+-// A background watcher keeps the message and the title it was given (the rider's own wording).
+-let bgOpts;
+-globalThis.window = { Capacitor: { isNativePlatform: () => true, registerPlugin: () => ({
+-  addWatcher: async (opts, fn) => { bgOpts = opts; cb = fn; return "w2"; },
+-  removeWatcher: async () => {},
+-}) } };
+-N.startNativeWatch(() => {}, () => {}, { background: true, title: "NostrRide", message: "Measuring this ride." });
++assert.deepEqual(removes().map((c) => c.options), [{ id: "w1" }], "stopping removes the watcher");
++
++// ── Stopped before the watcher id came back: it is removed as soon as it arrives ──
++const before = removes().length;
++const stopEarly = N.startNativeWatch(() => {}, () => {});
++stopEarly();
++await new Promise((r) => setTimeout(r, 5));
++assert.equal(removes().length, before + 1, "removed on arrival");
++
++// ── A foreground watcher: no message (the plugin reads its presence to decide whether the app may
++//    keep running), and distanceFilter 0 is what a heartbeat watcher asks for ──
++N.startNativeWatch(() => {}, () => {}, { background: false, distanceFilter: 0 })();
+ await new Promise((r) => setTimeout(r, 5));
+-assert.equal(bgOpts.backgroundTitle, "NostrRide");
+-assert.equal(bgOpts.backgroundMessage, "Measuring this ride.");
+-assert.equal(bgOpts.distanceFilter, 10, "the default filter");
+-// Every fix reaches the heartbeat listeners BEFORE the map's move filter, even one that is ignored.
++const fg = adds().at(-1);
++assert.equal(fg.options.backgroundMessage, undefined, "no message = no background mode");
++assert.equal(fg.options.backgroundTitle, undefined);
++assert.equal(fg.options.distanceFilter, 0, "0 = every fix");
++
++// ── A background watcher keeps the wording it was given ──
++N.startNativeWatch(() => {}, () => {}, { background: true, title: "NostrRide", message: "Measuring this ride." })();
++await new Promise((r) => setTimeout(r, 5));
++const bg = adds().at(-1);
++assert.equal(bg.options.backgroundTitle, "NostrRide");
++assert.equal(bg.options.backgroundMessage, "Measuring this ride.");
++assert.equal(bg.options.distanceFilter, 10, "the default filter");
++
++// ── Every fix reaches the heartbeat listeners BEFORE the map's move filter, even one it ignores ──
+ const heard = [];
+ const off = N.subscribeNativeFixes((f) => heard.push(f));
+-cb({ latitude: 1, longitude: 2, accuracy: 3, time: 5 });
+-assert.equal(heard.length, 1); assert.equal(heard[0].coords.latitude, 1);
++add.callback({ latitude: 1, longitude: 2, accuracy: 3, time: 5 });
++assert.equal(heard.length, 1);
++assert.equal(heard[0].coords.latitude, 1);
+ off();
+-cb({ latitude: 1, longitude: 2, accuracy: 3, time: 6 });
++add.callback({ latitude: 1, longitude: 2, accuracy: 3, time: 6 });
+ assert.equal(heard.length, 1, "unsubscribed listeners stop hearing fixes");
++
+ // One listener that throws must not stop the others (the payment loop must keep being woken).
+ const offBad = N.subscribeNativeFixes(() => { throw new Error("boom"); });
+ const heard2 = [];
+ const offGood = N.subscribeNativeFixes(() => heard2.push(1));
+-cb({ latitude: 1, longitude: 2, accuracy: 3, time: 7 });
++add.callback({ latitude: 1, longitude: 2, accuracy: 3, time: 7 });
+ assert.equal(heard2.length, 1);
+-offBad(); offGood();
+-// No plugin: a clear error, not a crash.
+-globalThis.window = { Capacitor: { isNativePlatform: () => true } };
+-const errs = []; N.startNativeWatch(() => {}, (e) => errs.push(e)); assert.equal(errs[0].code, 2);
++offBad();
++offGood();
++
+ console.log("native checks passed");
+ process.exit(0);

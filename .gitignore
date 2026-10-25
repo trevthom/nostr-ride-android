@@ -1,0 +1,9 @@
+# The app checkout setup.sh makes. The shell itself lives in trevthom/nostr-ride.
+app/
+# The APK setup.sh copies out, and any keystore: neither belongs in git.
+*.apk
+*.aab
+*.jks
+*.keystore
+.DS_Store
+*.log
